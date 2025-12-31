@@ -45,7 +45,7 @@ const safeGet = (key, fallback) => {
   }
 };
 
-// --- DATE PARSER (DD/MM/YYYY -> Timestamp) ---
+// --- DATE PARSER ---
 const parseDate = (dateStr) => {
   if (!dateStr) return 0;
   const parts = dateStr.split("/");
@@ -239,13 +239,22 @@ export default function App() {
   const addRoutine = (newRoutine) =>
     setRoutines((prev) => [...prev, newRoutine]);
 
+  // --- SMART HISTORY LOOKUP ---
+  // Scans history backwards to find the last valid entry for this specific set index
   const getPreviousRecord = (exerciseName, setIndex) => {
-    const lastWorkout = history.find((h) =>
-      h.exercises.some((e) => e.name === exerciseName)
-    );
-    if (!lastWorkout) return null;
-    const exercise = lastWorkout.exercises.find((e) => e.name === exerciseName);
-    return exercise?.sets?.[setIndex] || null;
+    if (!history || history.length === 0) return null;
+
+    for (const workout of history) {
+      const exercise = workout.exercises.find((e) => e.name === exerciseName);
+      if (exercise && exercise.sets && exercise.sets[setIndex]) {
+        const set = exercise.sets[setIndex];
+        // Valid if it was marked completed OR has actual data
+        if (set.completed || (set.weight !== "" && set.reps !== "")) {
+          return set;
+        }
+      }
+    }
+    return null;
   };
 
   // --- NAV ---
@@ -387,7 +396,6 @@ export default function App() {
 // SUB-COMPONENTS
 // ----------------------
 
-// *** SWIPEABLE SET ROW ***
 const SwipeableSet = ({ children, onDelete }) => {
   const [offsetX, setOffsetX] = useState(0);
   const touchStartX = useRef(null);
@@ -435,7 +443,6 @@ const SwipeableSet = ({ children, onDelete }) => {
   );
 };
 
-// *** HOME VIEW (FILTERS & GRAPH) ***
 const HomeView = ({
   history,
   startWorkout,
@@ -456,12 +463,10 @@ const HomeView = ({
     const hDate = parseDate(h.date);
     const start = filterStart ? new Date(filterStart).getTime() : 0;
     const end = filterEnd ? new Date(filterEnd).getTime() : 9999999999999;
-
     const dateMatch = hDate >= start && hDate <= end;
     let exMatch = true;
-    if (filterExercise) {
+    if (filterExercise)
       exMatch = h.exercises.some((e) => e.name === filterExercise);
-    }
     return dateMatch && exMatch;
   });
 
@@ -484,8 +489,7 @@ const HomeView = ({
         .reverse()
     : [];
 
-  // Custom Tooltip for Chart
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
       return (
         <div className="bg-zinc-900 border border-zinc-700 p-3 rounded-lg shadow-xl">
@@ -517,10 +521,8 @@ const HomeView = ({
         </button>
       </div>
 
-      {/* MODERN FILTER DASHBOARD */}
       {showFilters && (
         <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl mb-6 space-y-4 animate-in slide-in-from-top-2 shadow-lg">
-          {/* Date Inputs - Modern Card Style */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 relative">
               <label className="text-[10px] uppercase text-zinc-500 font-bold block mb-1">
@@ -551,8 +553,6 @@ const HomeView = ({
               </div>
             </div>
           </div>
-
-          {/* Exercise Dropdown */}
           <div className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 flex items-center gap-3">
             <Search size={16} className="text-zinc-500" />
             <select
@@ -568,7 +568,6 @@ const HomeView = ({
               ))}
             </select>
           </div>
-
           {(filterStart || filterEnd || filterExercise) && (
             <button
               onClick={() => {
@@ -584,7 +583,6 @@ const HomeView = ({
         </div>
       )}
 
-      {/* PROGRESSION CHART (AREA) */}
       {filterExercise && (
         <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl mb-6 shadow-sm">
           <div className="flex items-center gap-2 mb-4">
@@ -595,7 +593,6 @@ const HomeView = ({
               {filterExercise} Max Weight
             </h3>
           </div>
-
           {chartData.length > 0 ? (
             <div className="h-[200px] w-full">
               <ResponsiveContainer width="100%" height="100%">
@@ -667,7 +664,6 @@ const HomeView = ({
             : "History Log"}
         </h3>
       </div>
-
       <div className="space-y-4">
         {filteredHistory.length === 0 && (
           <div className="text-zinc-600 text-center py-12 text-sm bg-zinc-900/50 rounded-xl border border-zinc-800 border-dashed">
@@ -790,9 +786,6 @@ const WorkoutDashboard = ({
   return (
     <div className="p-4 pb-24 animate-in fade-in">
       <h1 className="text-3xl font-bold mb-6">Workout</h1>
-
-      {/* Quick Start has been REMOVED as requested */}
-
       <div className="flex justify-between items-end mb-4">
         <h3 className="text-zinc-500 font-bold text-xs uppercase tracking-wider">
           Your Routines
@@ -969,31 +962,59 @@ const ActiveSession = ({
     });
   };
 
+  // --- SMART UPDATE LOGIC ---
   const updateSet = (exId, setIdx, field, val) => {
-    // Check for timer trigger BEFORE update
+    // Check previous record first if we are completing
+    let previousRecord = null;
     if (field === "completed" && val === true) {
-      const exercise = workout.exercises.find((e) => e.id === exId);
-      // Only trigger if set was NOT completed before
-      if (exercise && !exercise.sets[setIdx].completed) {
-        triggerRest(exercise.restTime || 60);
-      }
+      const exerciseName = workout.exercises.find((e) => e.id === exId).name;
+      previousRecord = getPrev(exerciseName, setIdx);
     }
 
     setWorkout((prev) => {
       if (!prev) return null;
-      const exercise = prev.exercises.find((e) => e.id === exId);
-      if (!exercise) return prev;
-
       return {
         ...prev,
         exercises: prev.exercises.map((ex) => {
           if (ex.id !== exId) return ex;
           const newSets = [...ex.sets];
-          newSets[setIdx] = { ...newSets[setIdx], [field]: val };
+
+          // If completing, handle auto-fill logic
+          if (field === "completed" && val === true) {
+            const currentSet = newSets[setIdx];
+            let newWeight = currentSet.weight;
+            let newReps = currentSet.reps;
+
+            // If empty, try to fill from previous record
+            if (previousRecord) {
+              if (newWeight === "" || newWeight === null)
+                newWeight = previousRecord.weight;
+              if (newReps === "" || newReps === null)
+                newReps = previousRecord.reps;
+            }
+
+            newSets[setIdx] = {
+              ...currentSet,
+              completed: true,
+              weight: newWeight,
+              reps: newReps,
+            };
+          } else {
+            // Normal update
+            newSets[setIdx] = { ...newSets[setIdx], [field]: val };
+          }
           return { ...ex, sets: newSets };
         }),
       };
     });
+
+    // Check timer trigger (must rely on old state check to see if it wasn't already completed)
+    const setWasNotCompleted = !workout.exercises.find((e) => e.id === exId)
+      .sets[setIdx].completed;
+    if (field === "completed" && val === true && setWasNotCompleted) {
+      const exercise = workout.exercises.find((e) => e.id === exId);
+      if (exercise) triggerRest(exercise.restTime || 60);
+    }
   };
 
   const adjustRestPref = (exId, delta) => {
@@ -1214,8 +1235,8 @@ const ActiveSession = ({
                           <input
                             type="number"
                             inputMode="decimal"
-                            placeholder="-"
-                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
+                            placeholder={prev?.weight || "-"}
+                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none placeholder:text-zinc-700 ${
                               s.completed
                                 ? "border-emerald-800 text-emerald-100"
                                 : "border-zinc-700 text-white"
@@ -1230,8 +1251,8 @@ const ActiveSession = ({
                           <input
                             type="number"
                             inputMode="decimal"
-                            placeholder="-"
-                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
+                            placeholder={prev?.reps || "-"}
+                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none placeholder:text-zinc-700 ${
                               s.completed
                                 ? "border-emerald-800 text-emerald-100"
                                 : "border-zinc-700 text-white"
