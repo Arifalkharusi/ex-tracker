@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Dumbbell,
   Play,
@@ -16,7 +16,21 @@ import {
   Activity,
   List,
   Watch,
+  LayoutTemplate,
+  Filter,
+  TrendingUp,
+  Calendar as CalIcon,
+  Search,
 } from "lucide-react";
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 
 // --- ROBUST STORAGE HELPER ---
 const safeGet = (key, fallback) => {
@@ -24,7 +38,6 @@ const safeGet = (key, fallback) => {
     const item = localStorage.getItem(key);
     if (!item) return fallback;
     const parsed = JSON.parse(item);
-    // Extra safety: If we expect an array (routines/history) but got something else, reset.
     if (Array.isArray(fallback) && !Array.isArray(parsed)) return fallback;
     return parsed;
   } catch (e) {
@@ -32,21 +45,48 @@ const safeGet = (key, fallback) => {
   }
 };
 
+// --- DATE PARSER (DD/MM/YYYY -> Timestamp) ---
+const parseDate = (dateStr) => {
+  if (!dateStr) return 0;
+  const parts = dateStr.split("/");
+  if (parts.length !== 3) return 0;
+  return new Date(parts[2], parts[1] - 1, parts[0]).getTime();
+};
+
 const DEFAULT_ROUTINES = [
   {
     id: 1,
     name: "Push Day",
     exercises: [
-      { name: "Bench Press", restTime: 90 },
-      { name: "Overhead Press", restTime: 90 },
+      {
+        name: "Bench Press",
+        restTime: 90,
+        sets: [
+          { weight: "", reps: "", completed: false },
+          { weight: "", reps: "", completed: false },
+        ],
+      },
+      {
+        name: "Overhead Press",
+        restTime: 90,
+        sets: [{ weight: "", reps: "", completed: false }],
+      },
     ],
   },
   {
     id: 2,
     name: "Pull Day",
     exercises: [
-      { name: "Deadlift", restTime: 120 },
-      { name: "Pull Ups", restTime: 90 },
+      {
+        name: "Deadlift",
+        restTime: 120,
+        sets: [{ weight: "", reps: "", completed: false }],
+      },
+      {
+        name: "Pull Ups",
+        restTime: 90,
+        sets: [{ weight: "", reps: "", completed: false }],
+      },
     ],
   },
 ];
@@ -55,7 +95,6 @@ export default function App() {
   // --- STATE ---
   const [view, setView] = useState("home");
 
-  // Load data
   const [routines, setRoutines] = useState(() =>
     safeGet("routines", DEFAULT_ROUTINES)
   );
@@ -64,7 +103,6 @@ export default function App() {
     safeGet("activeWorkout", null)
   );
 
-  // UI State
   const [selectedHistory, setSelectedHistory] = useState(null);
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
@@ -72,9 +110,9 @@ export default function App() {
     msg: "",
     action: null,
   });
+  const [finishModal, setFinishModal] = useState({ isOpen: false });
 
-  // --- PERSISTENCE EFFECTS ---
-  // These run every time the specific state changes to save it.
+  // --- PERSISTENCE ---
   useEffect(
     () => localStorage.setItem("routines", JSON.stringify(routines)),
     [routines]
@@ -118,6 +156,8 @@ export default function App() {
   const startWorkout = (routine = null) => {
     const newWorkout = {
       id: Date.now(),
+      routineId: routine ? routine.id : null,
+      routineName: routine ? routine.name : null,
       startTime: Date.now(),
       duration: 0,
       name: routine ? routine.name : "Freestyle Workout",
@@ -125,7 +165,10 @@ export default function App() {
         ? (routine.exercises || []).map((e) => ({
             ...e,
             id: Date.now() + Math.random(),
-            sets: [{ weight: "", reps: "", completed: false }],
+            sets:
+              e.sets && e.sets.length > 0
+                ? e.sets.map(() => ({ weight: "", reps: "", completed: false }))
+                : [{ weight: "", reps: "", completed: false }],
             restTime: e.restTime || 60,
             collapsed: false,
           }))
@@ -135,15 +178,45 @@ export default function App() {
     setView("workout");
   };
 
-  const finishWorkout = () => {
+  const handleFinishClick = () => {
     if (!activeWorkout) return;
+    if (activeWorkout.routineId) {
+      setFinishModal({ isOpen: true });
+    } else {
+      completeSession(false);
+    }
+  };
+
+  const completeSession = (shouldUpdateRoutine) => {
     const completed = {
       ...activeWorkout,
       endTime: Date.now(),
       date: new Date().toLocaleDateString("en-GB"),
     };
-    // Use functional update to ensure history persists correctly
+
     setHistory((prev) => [completed, ...prev]);
+
+    if (shouldUpdateRoutine && activeWorkout.routineId) {
+      setRoutines((prev) =>
+        prev.map((r) => {
+          if (r.id === activeWorkout.routineId) {
+            const updatedExercises = activeWorkout.exercises.map((ex) => ({
+              name: ex.name,
+              restTime: ex.restTime || 60,
+              sets: ex.sets.map(() => ({
+                weight: "",
+                reps: "",
+                completed: false,
+              })),
+            }));
+            return { ...r, exercises: updatedExercises };
+          }
+          return r;
+        })
+      );
+    }
+
+    setFinishModal({ isOpen: false });
     setActiveWorkout(null);
     setView("home");
   };
@@ -155,7 +228,6 @@ export default function App() {
     });
   };
 
-  // Use functional updates (prev => ...) to fix persistence bugs
   const deleteHistoryItem = (id) =>
     confirmAction("Delete Record?", "Cannot be recovered.", () =>
       setHistory((prev) => prev.filter((h) => h.id !== id))
@@ -205,10 +277,40 @@ export default function App() {
     </button>
   );
 
-  // --- RENDER ---
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-500/30">
-      {/* CONFIRMATION MODAL */}
+      {/* MODALS */}
+      {finishModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl w-full max-w-sm shadow-2xl scale-100 animate-in zoom-in-95">
+            <div className="flex items-center gap-3 text-blue-500 mb-2">
+              <LayoutTemplate size={24} />
+              <h3 className="font-bold text-lg text-white">Update Routine?</h3>
+            </div>
+            <p className="text-zinc-400 mb-6 text-sm">
+              Save changes to your <b>{activeWorkout?.routineName}</b> routine?
+            </p>
+            <button
+              onClick={() => completeSession(true)}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold mb-3 flex items-center justify-center gap-2"
+            >
+              <Check size={18} /> Yes, Update Routine
+            </button>
+            <button
+              onClick={() => completeSession(false)}
+              className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl font-bold flex items-center justify-center gap-2"
+            >
+              <History size={18} /> No, Just Save History
+            </button>
+            <button
+              onClick={() => setFinishModal({ isOpen: false })}
+              className="mt-4 text-xs text-zinc-500 w-full text-center hover:text-zinc-300"
+            >
+              Back to workout
+            </button>
+          </div>
+        </div>
+      )}
       {confirmModal.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
           <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl w-full max-w-sm shadow-2xl scale-100 animate-in zoom-in-95">
@@ -237,6 +339,7 @@ export default function App() {
         </div>
       )}
 
+      {/* VIEW ROUTING */}
       {view === "home" && (
         <HomeView
           history={history}
@@ -256,13 +359,12 @@ export default function App() {
           NavBar={NavBar}
         />
       )}
-
       {view === "workout" &&
         (activeWorkout ? (
           <ActiveSession
             workout={activeWorkout}
             setWorkout={setActiveWorkout}
-            onFinish={finishWorkout}
+            onFinishClick={handleFinishClick}
             onCancel={cancelWorkout}
             getPrev={getPreviousRecord}
             confirmAction={confirmAction}
@@ -282,74 +384,332 @@ export default function App() {
 }
 
 // ----------------------
-// COMPONENTS
+// SUB-COMPONENTS
 // ----------------------
 
+// *** SWIPEABLE SET ROW ***
+const SwipeableSet = ({ children, onDelete }) => {
+  const [offsetX, setOffsetX] = useState(0);
+  const touchStartX = useRef(null);
+  const isDragging = useRef(false);
+
+  const handleTouchStart = (e) => {
+    touchStartX.current = e.touches[0].clientX;
+    isDragging.current = true;
+  };
+  const handleTouchMove = (e) => {
+    if (!isDragging.current || touchStartX.current === null) return;
+    const diff = touchStartX.current - e.touches[0].clientX;
+    if (diff > 0 && diff < 100) setOffsetX(diff);
+  };
+  const handleTouchEnd = () => {
+    isDragging.current = false;
+    touchStartX.current = null;
+    setOffsetX(offsetX > 40 ? 70 : 0);
+  };
+
+  return (
+    <div
+      className="relative overflow-hidden group touch-pan-y"
+      onClick={() => setOffsetX(0)}
+    >
+      <div
+        className="absolute top-0 right-0 bottom-0 w-[70px] bg-red-600 flex items-center justify-center z-0 rounded-r-lg"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 size={20} className="text-white" />
+      </div>
+      <div
+        className="relative z-10 bg-zinc-900 transition-transform duration-200 ease-out"
+        style={{ transform: `translateX(-${offsetX}px)` }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {children}
+      </div>
+    </div>
+  );
+};
+
+// *** HOME VIEW (FILTERS & GRAPH) ***
 const HomeView = ({
   history,
   startWorkout,
   deleteHistoryItem,
   viewDetails,
   NavBar,
-}) => (
-  <div className="p-4 pb-24">
-    <h1 className="text-3xl font-bold mb-6">Activity</h1>
-    <div
-      onClick={() => startWorkout()}
-      className="bg-blue-600 text-white p-6 rounded-2xl mb-8 flex justify-between items-center shadow-lg active:scale-95 transition-transform cursor-pointer"
-    >
-      <div>
-        <h2 className="font-bold text-xl">Quick Start</h2>
-        <p className="text-blue-200 text-sm">Start an empty session</p>
+}) => {
+  const [filterStart, setFilterStart] = useState("");
+  const [filterEnd, setFilterEnd] = useState("");
+  const [filterExercise, setFilterExercise] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+
+  const uniqueExercises = Array.from(
+    new Set(history.flatMap((h) => h.exercises.map((e) => e.name)))
+  ).sort();
+
+  const filteredHistory = history.filter((h) => {
+    const hDate = parseDate(h.date);
+    const start = filterStart ? new Date(filterStart).getTime() : 0;
+    const end = filterEnd ? new Date(filterEnd).getTime() : 9999999999999;
+
+    const dateMatch = hDate >= start && hDate <= end;
+    let exMatch = true;
+    if (filterExercise) {
+      exMatch = h.exercises.some((e) => e.name === filterExercise);
+    }
+    return dateMatch && exMatch;
+  });
+
+  const chartData = filterExercise
+    ? filteredHistory
+        .map((h) => {
+          const ex = h.exercises.find((e) => e.name === filterExercise);
+          if (!ex) return null;
+          const maxWeight = Math.max(
+            ...ex.sets.map((s) => Number(s.weight) || 0)
+          );
+          if (maxWeight === 0) return null;
+          return {
+            date: h.date.substring(0, 5),
+            weight: maxWeight,
+            fullDate: h.date,
+          };
+        })
+        .filter(Boolean)
+        .reverse()
+    : [];
+
+  // Custom Tooltip for Chart
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-zinc-900 border border-zinc-700 p-3 rounded-lg shadow-xl">
+          <p className="text-zinc-400 text-xs mb-1">
+            {payload[0].payload.fullDate}
+          </p>
+          <p className="text-blue-400 font-bold text-sm">
+            {payload[0].value}kg
+          </p>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <div className="p-4 pb-24">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold">Activity</h1>
+        <button
+          onClick={() => setShowFilters(!showFilters)}
+          className={`p-2 rounded-lg border transition-all ${
+            showFilters
+              ? "bg-blue-600 border-blue-600 text-white"
+              : "bg-zinc-900 border-zinc-800 text-zinc-400"
+          }`}
+        >
+          <Filter size={20} />
+        </button>
       </div>
-      <div className="bg-white/20 p-3 rounded-full">
-        <Play fill="white" size={24} />
-      </div>
-    </div>
-    <h3 className="text-zinc-500 font-bold text-xs uppercase tracking-wider mb-4">
-      Recent Workouts
-    </h3>
-    <div className="space-y-4">
-      {history.length === 0 && (
-        <div className="text-zinc-600 text-center py-8">
-          No workouts recorded yet.
+
+      {/* MODERN FILTER DASHBOARD */}
+      {showFilters && (
+        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl mb-6 space-y-4 animate-in slide-in-from-top-2 shadow-lg">
+          {/* Date Inputs - Modern Card Style */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 relative">
+              <label className="text-[10px] uppercase text-zinc-500 font-bold block mb-1">
+                From
+              </label>
+              <div className="flex items-center gap-2">
+                <CalIcon size={14} className="text-blue-500" />
+                <input
+                  type="date"
+                  className="bg-transparent text-white text-sm w-full outline-none [color-scheme:dark]"
+                  value={filterStart}
+                  onChange={(e) => setFilterStart(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 relative">
+              <label className="text-[10px] uppercase text-zinc-500 font-bold block mb-1">
+                To
+              </label>
+              <div className="flex items-center gap-2">
+                <CalIcon size={14} className="text-blue-500" />
+                <input
+                  type="date"
+                  className="bg-transparent text-white text-sm w-full outline-none [color-scheme:dark]"
+                  value={filterEnd}
+                  onChange={(e) => setFilterEnd(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Exercise Dropdown */}
+          <div className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 flex items-center gap-3">
+            <Search size={16} className="text-zinc-500" />
+            <select
+              className="bg-transparent text-white text-sm w-full outline-none py-2"
+              value={filterExercise}
+              onChange={(e) => setFilterExercise(e.target.value)}
+            >
+              <option value="">Select Exercise to Graph...</option>
+              {uniqueExercises.map((ex) => (
+                <option key={ex} value={ex}>
+                  {ex}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {(filterStart || filterEnd || filterExercise) && (
+            <button
+              onClick={() => {
+                setFilterStart("");
+                setFilterEnd("");
+                setFilterExercise("");
+              }}
+              className="text-xs text-red-400 w-full text-center mt-2 hover:text-red-300"
+            >
+              Clear Filters
+            </button>
+          )}
         </div>
       )}
-      {history.map((w) => (
-        <div
-          key={w.id}
-          onClick={() => viewDetails(w)}
-          className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl relative group active:bg-zinc-800 transition-colors cursor-pointer"
-        >
-          <div className="flex justify-between items-start mb-2">
-            <div>
-              <span className="font-bold block">{w.name}</span>
-              <span className="text-zinc-500 text-xs">{w.date}</span>
+
+      {/* PROGRESSION CHART (AREA) */}
+      {filterExercise && (
+        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="bg-blue-900/30 p-1.5 rounded-full">
+              <TrendingUp size={16} className="text-blue-500" />
             </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                deleteHistoryItem(w.id);
-              }}
-              className="p-2 text-zinc-600 hover:text-red-500 z-10"
-            >
-              <Trash2 size={18} />
-            </button>
+            <h3 className="font-bold text-sm text-white">
+              {filterExercise} Max Weight
+            </h3>
           </div>
-          <div className="text-zinc-400 text-sm flex gap-4">
-            <span className="flex items-center gap-1">
-              <Clock size={14} /> {Math.floor((w.duration || 0) / 60)}m
-            </span>
-            <span className="flex items-center gap-1">
-              <Dumbbell size={14} /> {w.exercises?.length || 0} Ex
-            </span>
-          </div>
+
+          {chartData.length > 0 ? (
+            <div className="h-[200px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient
+                      id="colorWeight"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="#27272a"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#52525b"
+                    fontSize={10}
+                    tickMargin={10}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    stroke="#52525b"
+                    fontSize={10}
+                    domain={["auto", "auto"]}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    content={<CustomTooltip />}
+                    cursor={{
+                      stroke: "#3f3f46",
+                      strokeWidth: 1,
+                      strokeDasharray: "4 4",
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="weight"
+                    stroke="#3b82f6"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#colorWeight)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="h-[150px] flex flex-col items-center justify-center text-zinc-600">
+              <Activity size={32} className="mb-2 opacity-50" />
+              <span className="text-sm">No data recorded yet.</span>
+            </div>
+          )}
         </div>
-      ))}
+      )}
+
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-zinc-500 font-bold text-xs uppercase tracking-wider">
+          {filterExercise || filterStart || filterEnd
+            ? `Found ${filteredHistory.length} Sessions`
+            : "History Log"}
+        </h3>
+      </div>
+
+      <div className="space-y-4">
+        {filteredHistory.length === 0 && (
+          <div className="text-zinc-600 text-center py-12 text-sm bg-zinc-900/50 rounded-xl border border-zinc-800 border-dashed">
+            No workouts match your filters.
+          </div>
+        )}
+        {filteredHistory.map((w) => (
+          <div
+            key={w.id}
+            onClick={() => viewDetails(w)}
+            className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl relative group active:bg-zinc-800 transition-colors cursor-pointer"
+          >
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <span className="font-bold block">{w.name}</span>
+                <span className="text-zinc-500 text-xs">{w.date}</span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteHistoryItem(w.id);
+                }}
+                className="p-2 text-zinc-600 hover:text-red-500 z-10"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+            <div className="text-zinc-400 text-sm flex gap-4">
+              <span className="flex items-center gap-1">
+                <Clock size={14} /> {Math.floor((w.duration || 0) / 60)}m
+              </span>
+              <span className="flex items-center gap-1">
+                <Dumbbell size={14} /> {w.exercises?.length || 0} Ex
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <NavBar />
     </div>
-    <NavBar />
-  </div>
-);
+  );
+};
 
 const HistoryDetailsView = ({ workout, onBack, NavBar }) => (
   <div className="p-4 pb-24">
@@ -430,20 +790,9 @@ const WorkoutDashboard = ({
   return (
     <div className="p-4 pb-24 animate-in fade-in">
       <h1 className="text-3xl font-bold mb-6">Workout</h1>
-      <div
-        onClick={() => startWorkout()}
-        className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl mb-8 flex justify-between items-center shadow-sm active:scale-95 transition-transform cursor-pointer group"
-      >
-        <div>
-          <h2 className="font-bold text-xl text-blue-400 group-hover:text-blue-300">
-            Quick Start
-          </h2>
-          <p className="text-zinc-500 text-sm">Start empty session</p>
-        </div>
-        <div className="bg-blue-600/10 p-3 rounded-full text-blue-500">
-          <Play size={24} fill="currentColor" />
-        </div>
-      </div>
+
+      {/* Quick Start has been REMOVED as requested */}
+
       <div className="flex justify-between items-end mb-4">
         <h3 className="text-zinc-500 font-bold text-xs uppercase tracking-wider">
           Your Routines
@@ -488,7 +837,7 @@ const WorkoutDashboard = ({
       </div>
       <button
         onClick={() => setIsCreating(true)}
-        className="w-full py-4 border-2 border-dashed border-zinc-800 text-zinc-500 rounded-xl font-bold hover:border-zinc-700 hover:text-zinc-300 transition-colors flex items-center justify-center gap-2"
+        className="w-full py-4 border-2 border-dashed border-zinc-500 text-zinc-500 rounded-xl font-bold hover:border-zinc-700 hover:text-zinc-300 transition-colors flex items-center justify-center gap-2"
       >
         <Plus size={20} /> Create New Routine
       </button>
@@ -566,7 +915,11 @@ const RoutineCreator = ({ onSave, onCancel, NavBar }) => {
             onSave({
               id: Date.now(),
               name,
-              exercises: tempEx.map((n) => ({ name: n, restTime: 60 })),
+              exercises: tempEx.map((n) => ({
+                name: n,
+                restTime: 60,
+                sets: [{ weight: "", reps: "", completed: false }],
+              })),
             })
           }
           disabled={!name}
@@ -585,7 +938,7 @@ const RoutineCreator = ({ onSave, onCancel, NavBar }) => {
 const ActiveSession = ({
   workout,
   setWorkout,
-  onFinish,
+  onFinishClick,
   onCancel,
   getPrev,
   confirmAction,
@@ -617,15 +970,19 @@ const ActiveSession = ({
   };
 
   const updateSet = (exId, setIdx, field, val) => {
-    let justCompleted = false;
+    // Check for timer trigger BEFORE update
+    if (field === "completed" && val === true) {
+      const exercise = workout.exercises.find((e) => e.id === exId);
+      // Only trigger if set was NOT completed before
+      if (exercise && !exercise.sets[setIdx].completed) {
+        triggerRest(exercise.restTime || 60);
+      }
+    }
+
     setWorkout((prev) => {
       if (!prev) return null;
       const exercise = prev.exercises.find((e) => e.id === exId);
       if (!exercise) return prev;
-
-      const set = exercise.sets[setIdx];
-      if (field === "completed" && val === true && !set.completed)
-        justCompleted = true;
 
       return {
         ...prev,
@@ -637,11 +994,6 @@ const ActiveSession = ({
         }),
       };
     });
-    // Trigger Timer Automatically
-    if (justCompleted) {
-      const exercise = workout.exercises.find((e) => e.id === exId);
-      if (exercise) triggerRest(exercise.restTime || 60);
-    }
   };
 
   const adjustRestPref = (exId, delta) => {
@@ -653,6 +1005,24 @@ const ActiveSession = ({
           : e
       ),
     }));
+  };
+
+  const handleAddExercises = (names) => {
+    const newExs = names.map((name) => ({
+      id: Date.now() + Math.random(),
+      name,
+      sets: [{ weight: "", reps: "", completed: false }],
+      restTime: 60,
+      collapsed: false,
+    }));
+
+    setWorkout((prev) => {
+      if (!prev) return prev;
+      const currentExercises = Array.isArray(prev.exercises)
+        ? prev.exercises
+        : [];
+      return { ...prev, exercises: [...currentExercises, ...newExs] };
+    });
   };
 
   const addSet = (exId) =>
@@ -667,7 +1037,8 @@ const ActiveSession = ({
           : ex
       ),
     }));
-  const deleteSet = (exId, setIdx) =>
+
+  const deleteSet = (exId, setIdx) => {
     setWorkout((prev) => ({
       ...prev,
       exercises: prev.exercises.map((ex) =>
@@ -676,6 +1047,8 @@ const ActiveSession = ({
           : ex
       ),
     }));
+  };
+
   const removeExercise = (exId) =>
     confirmAction(
       "Remove Exercise?",
@@ -709,19 +1082,7 @@ const ActiveSession = ({
       {showSearch && (
         <SearchModal
           onClose={() => setShowSearch(false)}
-          onAdd={(names) => {
-            const newExs = names.map((name) => ({
-              id: Date.now() + Math.random(),
-              name,
-              sets: [{ weight: "", reps: "", completed: false }],
-              restTime: 60,
-              collapsed: false,
-            }));
-            setWorkout((prev) => ({
-              ...prev,
-              exercises: [...prev.exercises, ...newExs],
-            }));
-          }}
+          onAdd={handleAddExercises}
         />
       )}
 
@@ -737,7 +1098,7 @@ const ActiveSession = ({
             {workout.name}
           </h2>
           <button
-            onClick={onFinish}
+            onClick={onFinishClick}
             className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm"
           >
             Finish
@@ -827,80 +1188,76 @@ const ActiveSession = ({
             </div>
             {!ex.collapsed && (
               <div className="p-3 space-y-3">
-                <div className="grid grid-cols-10 text-[10px] text-zinc-500 uppercase tracking-wider text-center font-bold">
+                <div className="grid grid-cols-12 text-[10px] text-zinc-500 uppercase tracking-wider text-center font-bold">
                   <div className="col-span-1">Set</div>
                   <div className="col-span-3">Prev</div>
-                  <div className="col-span-2">Kg</div>
-                  <div className="col-span-2">Reps</div>
+                  <div className="col-span-3">Kg</div>
+                  <div className="col-span-3">Reps</div>
+                  <div className="col-span-2">Done</div>
                 </div>
                 {ex.sets.map((s, i) => {
                   const prev = getPrev(ex.name, i);
                   return (
-                    <div
-                      key={i}
-                      className={`grid grid-cols-10 gap-2 items-center p-2 rounded-lg transition-colors ${
-                        s.completed ? "bg-emerald-900/20" : ""
-                      }`}
-                    >
-                      <div className="col-span-1 text-center font-bold text-zinc-500">
-                        {i + 1}
+                    <SwipeableSet key={i} onDelete={() => deleteSet(ex.id, i)}>
+                      <div
+                        className={`grid grid-cols-12 gap-2 items-center p-2 rounded-lg transition-colors relative z-10 ${
+                          s.completed ? "bg-emerald-900/20" : "bg-zinc-900"
+                        }`}
+                      >
+                        <div className="col-span-1 text-center font-bold text-zinc-500">
+                          {i + 1}
+                        </div>
+                        <div className="col-span-3 text-center text-xs text-zinc-600">
+                          {prev ? `${prev.weight}x${prev.reps}` : "-"}
+                        </div>
+                        <div className="col-span-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            placeholder="-"
+                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
+                              s.completed
+                                ? "border-emerald-800 text-emerald-100"
+                                : "border-zinc-700 text-white"
+                            }`}
+                            value={s.weight}
+                            onChange={(e) =>
+                              updateSet(ex.id, i, "weight", e.target.value)
+                            }
+                          />
+                        </div>
+                        <div className="col-span-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            placeholder="-"
+                            className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
+                              s.completed
+                                ? "border-emerald-800 text-emerald-100"
+                                : "border-zinc-700 text-white"
+                            }`}
+                            value={s.reps}
+                            onChange={(e) =>
+                              updateSet(ex.id, i, "reps", e.target.value)
+                            }
+                          />
+                        </div>
+                        <div className="col-span-2 flex justify-center">
+                          <button
+                            onClick={() =>
+                              updateSet(ex.id, i, "completed", !s.completed)
+                            }
+                            className={`w-8 h-8 rounded flex items-center justify-center transition-all ${
+                              s.completed
+                                ? "bg-emerald-500 text-white shadow-lg"
+                                : "bg-zinc-800 text-zinc-500"
+                            }`}
+                          >
+                            <Check size={16} />
+                          </button>
+                        </div>
                       </div>
-                      <div className="col-span-3 text-center text-xs text-zinc-600">
-                        {prev ? `${prev.weight}x${prev.reps}` : "-"}
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          placeholder="-"
-                          className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
-                            s.completed
-                              ? "border-emerald-800 text-emerald-100"
-                              : "border-zinc-700 text-white"
-                          }`}
-                          value={s.weight}
-                          onChange={(e) =>
-                            updateSet(ex.id, i, "weight", e.target.value)
-                          }
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          placeholder="-"
-                          className={`w-full bg-zinc-950 text-center p-2 rounded border outline-none ${
-                            s.completed
-                              ? "border-emerald-800 text-emerald-100"
-                              : "border-zinc-700 text-white"
-                          }`}
-                          value={s.reps}
-                          onChange={(e) =>
-                            updateSet(ex.id, i, "reps", e.target.value)
-                          }
-                        />
-                      </div>
-                      <div className="col-span-2 flex justify-end gap-1">
-                        <button
-                          onClick={() =>
-                            updateSet(ex.id, i, "completed", !s.completed)
-                          }
-                          className={`w-8 h-8 rounded flex items-center justify-center transition-all ${
-                            s.completed
-                              ? "bg-emerald-500 text-white shadow-lg"
-                              : "bg-zinc-800 text-zinc-500"
-                          }`}
-                        >
-                          <Check size={16} />
-                        </button>
-                        <button
-                          onClick={() => deleteSet(ex.id, i)}
-                          className="w-8 h-8 flex items-center justify-center text-zinc-700 hover:text-red-500"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    </div>
+                    </SwipeableSet>
                   );
                 })}
                 <button
@@ -991,9 +1348,16 @@ const SearchModal = ({ onClose, onAdd }) => {
   const filtered = list.filter((x) =>
     x.toLowerCase().includes(q.toLowerCase())
   );
+
   const handleAdd = () => {
     onAdd(sel.length ? sel : [q]);
     onClose();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && (q || sel.length > 0)) {
+      handleAdd();
+    }
   };
 
   return (
@@ -1008,6 +1372,7 @@ const SearchModal = ({ onClose, onAdd }) => {
           className="flex-1 bg-transparent outline-none text-white text-lg"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={handleKeyDown}
         />
         {(q || sel.length > 0) && (
           <button onClick={handleAdd} className="text-blue-500 font-bold">
