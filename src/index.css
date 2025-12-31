@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+html,
+body {
+  height: 100%;
+  background-color: #09090b; /* Zinc 950 */
+  overscroll-behavior-y: none; /* Prevents pull-to-refresh on mobile */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Remove arrows from number inputs */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
