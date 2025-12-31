@@ -32,7 +32,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-// --- ROBUST STORAGE HELPER ---
+// --- STORAGE HELPER ---
 const safeGet = (key, fallback) => {
   try {
     const item = localStorage.getItem(key);
@@ -45,7 +45,6 @@ const safeGet = (key, fallback) => {
   }
 };
 
-// --- DATE PARSER ---
 const parseDate = (dateStr) => {
   if (!dateStr) return 0;
   const parts = dateStr.split("/");
@@ -170,7 +169,7 @@ export default function App() {
                 ? e.sets.map(() => ({ weight: "", reps: "", completed: false }))
                 : [{ weight: "", reps: "", completed: false }],
             restTime: e.restTime || 60,
-            collapsed: false,
+            collapsed: true,
           }))
         : [],
     };
@@ -240,16 +239,18 @@ export default function App() {
     setRoutines((prev) => [...prev, newRoutine]);
 
   // --- SMART HISTORY LOOKUP ---
-  // Scans history backwards to find the last valid entry for this specific set index
+  // Iterates backwards to find the last *Completed* set with *Values*
   const getPreviousRecord = (exerciseName, setIndex) => {
     if (!history || history.length === 0) return null;
 
+    // Loop through history (Newest -> Oldest)
     for (const workout of history) {
       const exercise = workout.exercises.find((e) => e.name === exerciseName);
       if (exercise && exercise.sets && exercise.sets[setIndex]) {
         const set = exercise.sets[setIndex];
-        // Valid if it was marked completed OR has actual data
-        if (set.completed || (set.weight !== "" && set.reps !== "")) {
+        // Only return if it was actually done (completed) AND has values
+        // This skips sessions where you left it blank/skipped
+        if (set.completed && set.weight !== "" && set.reps !== "") {
           return set;
         }
       }
@@ -359,6 +360,7 @@ export default function App() {
             setView("history-details");
           }}
           NavBar={NavBar}
+          getPrev={getPreviousRecord}
         />
       )}
       {view === "history-details" && (
@@ -463,10 +465,12 @@ const HomeView = ({
     const hDate = parseDate(h.date);
     const start = filterStart ? new Date(filterStart).getTime() : 0;
     const end = filterEnd ? new Date(filterEnd).getTime() : 9999999999999;
+
     const dateMatch = hDate >= start && hDate <= end;
     let exMatch = true;
-    if (filterExercise)
+    if (filterExercise) {
       exMatch = h.exercises.some((e) => e.name === filterExercise);
+    }
     return dateMatch && exMatch;
   });
 
@@ -475,10 +479,13 @@ const HomeView = ({
         .map((h) => {
           const ex = h.exercises.find((e) => e.name === filterExercise);
           if (!ex) return null;
+          // Only consider sets that were completed and have data
+          const validSets = ex.sets.filter((s) => s.completed && s.weight);
+          if (validSets.length === 0) return null; // Skip days where this exercise was skipped
+
           const maxWeight = Math.max(
-            ...ex.sets.map((s) => Number(s.weight) || 0)
+            ...validSets.map((s) => Number(s.weight) || 0)
           );
-          if (maxWeight === 0) return null;
           return {
             date: h.date.substring(0, 5),
             weight: maxWeight,
@@ -489,7 +496,7 @@ const HomeView = ({
         .reverse()
     : [];
 
-  const CustomTooltip = ({ active, payload }) => {
+  const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       return (
         <div className="bg-zinc-900 border border-zinc-700 p-3 rounded-lg shadow-xl">
@@ -962,7 +969,6 @@ const ActiveSession = ({
     });
   };
 
-  // --- SMART UPDATE LOGIC ---
   const updateSet = (exId, setIdx, field, val) => {
     // Check previous record first if we are completing
     let previousRecord = null;
@@ -979,13 +985,12 @@ const ActiveSession = ({
           if (ex.id !== exId) return ex;
           const newSets = [...ex.sets];
 
-          // If completing, handle auto-fill logic
           if (field === "completed" && val === true) {
             const currentSet = newSets[setIdx];
             let newWeight = currentSet.weight;
             let newReps = currentSet.reps;
 
-            // If empty, try to fill from previous record
+            // If empty, auto-fill from previous (if it exists)
             if (previousRecord) {
               if (newWeight === "" || newWeight === null)
                 newWeight = previousRecord.weight;
@@ -1000,7 +1005,6 @@ const ActiveSession = ({
               reps: newReps,
             };
           } else {
-            // Normal update
             newSets[setIdx] = { ...newSets[setIdx], [field]: val };
           }
           return { ...ex, sets: newSets };
@@ -1008,7 +1012,6 @@ const ActiveSession = ({
       };
     });
 
-    // Check timer trigger (must rely on old state check to see if it wasn't already completed)
     const setWasNotCompleted = !workout.exercises.find((e) => e.id === exId)
       .sets[setIdx].completed;
     if (field === "completed" && val === true && setWasNotCompleted) {
@@ -1098,6 +1101,15 @@ const ActiveSession = ({
     0
   );
 
+  const toggleCollapse = (exId) => {
+    setWorkout((prev) => ({
+      ...prev,
+      exercises: prev.exercises.map((ex) =>
+        ex.id === exId ? { ...ex, collapsed: !ex.collapsed } : ex
+      ),
+    }));
+  };
+
   return (
     <div className="pb-32 font-sans relative animate-in fade-in">
       {showSearch && (
@@ -1165,14 +1177,7 @@ const ActiveSession = ({
             <div className="p-4 flex justify-between items-center bg-zinc-800/30 border-b border-zinc-800/50">
               <div
                 className="flex items-center gap-3 flex-1 cursor-pointer"
-                onClick={() =>
-                  setWorkout((prev) => ({
-                    ...prev,
-                    exercises: prev.exercises.map((e) =>
-                      e.id === ex.id ? { ...e, collapsed: !e.collapsed } : e
-                    ),
-                  }))
-                }
+                onClick={() => toggleCollapse(ex.id)}
               >
                 <h3 className="font-bold text-lg">{ex.name}</h3>
                 {ex.collapsed ? (
